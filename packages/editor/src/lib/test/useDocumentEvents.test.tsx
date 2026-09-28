@@ -142,23 +142,6 @@ describe('useDocumentEvents meta release', () => {
 		expect([...editor.inputs.keys]).toEqual([])
 	})
 
-	it('releases through a key_up that tools can match on key', async () => {
-		const { editor, container } = await renderEditor()
-		const keyUps: TLKeyboardEventInfo[] = []
-		editor.on('event', (info) => {
-			if (info.type === 'keyboard' && info.name === 'key_up') keyUps.push(info)
-		})
-
-		keyDown(container, { key: 'Meta', code: 'MetaLeft', metaKey: true })
-		keyDown(container, { key: 'a', code: 'KeyA', metaKey: true })
-		keyUp(container, metaKeyUp)
-
-		expect(keyUps.map((info) => [info.key, info.code])).toEqual([
-			['Meta', 'MetaLeft'],
-			['a', 'KeyA'],
-		])
-	})
-
 	// The synthetic releases used to report every modifier as up, which started the editor's
 	// 150ms release debounce for a shift that was still held: `ShiftLeft` left `inputs.keys`
 	// and the nudge (which reads the set) dropped back to its smaller step.
@@ -187,6 +170,35 @@ describe('useDocumentEvents meta release', () => {
 
 		await waitForModifierDebounce()
 		expect(editor.inputs.getMetaKey()).toBe(false)
+	})
+
+	// A key held from before Meta went down still gets its own keyup, so releasing it here
+	// would drop a key the user is still holding.
+	it('leaves keys held from before Meta went down', async () => {
+		const { editor, container } = await renderEditor()
+
+		keyDown(container, { key: ' ', code: 'Space' })
+		keyDown(container, { key: 'Meta', code: 'MetaLeft', metaKey: true })
+		keyUp(container, metaKeyUp)
+
+		expect([...editor.inputs.keys]).toEqual(['Space'])
+	})
+
+	// Idle.onKeyUp starts editing the selected shape on Enter, so replaying a key_up here
+	// stole the focus that cmd+Enter's a11y action had just put on the style toolbar.
+	it('does not fire tool key_up handlers for the keys it releases', async () => {
+		const { editor, container } = await renderEditor()
+		const keyUps: TLKeyboardEventInfo[] = []
+		editor.on('event', (info) => {
+			if (info.type === 'keyboard' && info.name === 'key_up') keyUps.push(info)
+		})
+
+		keyDown(container, { key: 'Meta', code: 'MetaLeft', metaKey: true })
+		keyDown(container, { key: 'Enter', code: 'Enter', metaKey: true })
+		keyUp(container, metaKeyUp)
+
+		expect([...editor.inputs.keys]).toEqual([])
+		expect(keyUps.map((info) => info.code)).toEqual(['MetaLeft'])
 	})
 
 	it('does not disturb keys held without Meta', async () => {

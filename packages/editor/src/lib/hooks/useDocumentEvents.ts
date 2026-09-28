@@ -17,6 +17,10 @@ export function useDocumentEvents() {
 	// code -> key, for the synthetic releases in `releaseHeldKeys`
 	const heldKeysRef = useRef(new Map<string, string>())
 
+	// Non-modifier keys pressed while Meta was down. macOS never delivers their keyup, so
+	// `inputs.keys` would count them as held for good; see the Meta branch in `handleKeyUp`.
+	const keysPressedWithMetaRef = useRef(new Set<string>())
+
 	// Prevent the browser's default drag and drop behavior on our container (UI, etc)
 	useEffect(() => {
 		if (!container) return
@@ -216,6 +220,7 @@ export function useDocumentEvents() {
 			}
 
 			heldKeysRef.current.set(e.code, e.key)
+			if (e.metaKey && !MODIFIER_CODES.has(e.code)) keysPressedWithMetaRef.current.add(e.code)
 			editor.dispatch(info)
 		}
 
@@ -231,6 +236,11 @@ export function useDocumentEvents() {
 				return
 			}
 
+			// The native `metaKey` is still true on Meta's own keyup, so reporting it as-is
+			// leaves the editor's release debounce unarmed and `getMetaKey()` stuck true.
+			const isMetaRelease = e.code === 'MetaLeft' || e.code === 'MetaRight'
+			const metaKey = isMetaRelease ? false : e.metaKey
+
 			const info: TLKeyboardEventInfo = {
 				type: 'keyboard',
 				name: 'key_up',
@@ -238,31 +248,28 @@ export function useDocumentEvents() {
 				code: e.code,
 				shiftKey: e.shiftKey,
 				altKey: e.altKey,
-				ctrlKey: e.metaKey || e.ctrlKey,
-				metaKey: e.metaKey,
-				accelKey: isAccelKey(e),
+				ctrlKey: metaKey || e.ctrlKey,
+				metaKey,
+				accelKey: isAccelKey({ ctrlKey: e.ctrlKey, metaKey }),
 			}
 
 			heldKeysRef.current.delete(e.code)
+			keysPressedWithMetaRef.current.delete(e.code)
 			editor.dispatch(info)
 
 			// macOS swallows the keyup of a non-modifier key pressed while Meta is held, so a
-			// stuck ArrowUp from Cmd+ArrowUp made every later arrow nudge diagonally. We can't
-			// tell that from a key still down, so we release both; a real hold needs a re-press.
-			if (e.code === 'MetaLeft' || e.code === 'MetaRight') {
-				releaseHeldKeys(editor, heldKeysRef.current, {
-					shouldRelease: (code) => !MODIFIER_CODES.has(code),
-					// Reporting a still-held modifier as up starts its 150ms release debounce,
-					// which drops `ShiftLeft` from `inputs.keys` and shrinks the shift-nudge
-					// step. `ctrlKey` folds Meta in elsewhere; with Meta up it's plain ctrl.
-					modifiers: {
-						shiftKey: e.shiftKey,
-						altKey: e.altKey,
-						ctrlKey: e.ctrlKey,
-						metaKey: false,
-						accelKey: isAccelKey({ ctrlKey: e.ctrlKey, metaKey: false }),
-					},
-				})
+			// stuck ArrowUp from Cmd+ArrowUp made every later arrow nudge diagonally (#10892).
+			// Only the keys pressed during this Meta window are owed a keyup - anything held
+			// from before it still gets its own. Drop them from `inputs.keys` rather than
+			// replaying a key_up, because a tool's onKeyUp is a real action at the wrong
+			// moment: a synthetic Enter re-entered shape editing and stole the focus that
+			// cmd+Enter's a11y action had just placed on the style toolbar.
+			if (isMetaRelease) {
+				for (const code of keysPressedWithMetaRef.current) {
+					editor.inputs.keys.delete(code)
+					heldKeysRef.current.delete(code)
+				}
+				keysPressedWithMetaRef.current.clear()
 			}
 		}
 
@@ -336,8 +343,9 @@ export function useDocumentEvents() {
 		const win = editor.getContainerWindow()
 
 		const handleWindowBlur = () => {
-			releaseHeldKeys(editor, heldKeysRef.current, { modifiers: NO_MODIFIERS })
+			releaseHeldKeys(editor, heldKeysRef.current)
 			heldKeysRef.current.clear()
+			keysPressedWithMetaRef.current.clear()
 		}
 
 		win.addEventListener('blur', handleWindowBlur)
@@ -358,39 +366,25 @@ const MODIFIER_CODES = new Set([
 	'MetaRight',
 ])
 
-type ModifierState = Pick<
-	TLKeyboardEventInfo,
-	'shiftKey' | 'altKey' | 'ctrlKey' | 'metaKey' | 'accelKey'
->
-
-const NO_MODIFIERS: ModifierState = {
-	shiftKey: false,
-	altKey: false,
-	ctrlKey: false,
-	metaKey: false,
-	accelKey: false,
-}
-
 /**
  * Replay a `key_up` for each held key so it runs the normal release path, including tool
  * `onKeyUp`. `inputs.keys` stores codes but tools match on `info.key`, hence `heldKeys`.
  *
- * `modifiers` is the state these synthetic events report. The editor releases a modifier 150ms
- * after an event says it's up, so a caller with modifiers still held must say so.
+ * Everything is reported as up, which is only true once focus has left the window. A caller
+ * that still holds modifiers would arm the editor's 150ms release for them.
  */
-function releaseHeldKeys(
-	editor: Editor,
-	heldKeys: Map<string, string>,
-	{ modifiers, shouldRelease }: { modifiers: ModifierState; shouldRelease?(code: string): boolean }
-) {
+function releaseHeldKeys(editor: Editor, heldKeys: Map<string, string>) {
 	for (const code of [...editor.inputs.keys]) {
-		if (shouldRelease && !shouldRelease(code)) continue
 		editor.dispatch({
 			type: 'keyboard',
 			name: 'key_up',
 			key: heldKeys.get(code) ?? code,
 			code,
-			...modifiers,
+			shiftKey: false,
+			altKey: false,
+			ctrlKey: false,
+			metaKey: false,
+			accelKey: false,
 		})
 		heldKeys.delete(code)
 	}
