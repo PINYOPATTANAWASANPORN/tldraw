@@ -1,15 +1,8 @@
-import {
-	atom,
-	clearLocalStorage,
-	getFromLocalStorage,
-	promiseWithResolve,
-	setInLocalStorage,
-} from 'tldraw'
+import { atom, promiseWithResolve } from 'tldraw'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { getLocalSessionState, updateLocalSessionState } from '../utils/local-session-state'
 import { TldrawApp } from './TldrawApp'
 import { ZeroLogBuffer } from './ZeroLogBuffer'
-
-const INITIALIZED_KEY = 'tldraw_user_initialized_user:test'
 
 function createAppStub({
 	queryComplete = Promise.resolve(),
@@ -48,7 +41,7 @@ describe('TldrawApp.preload', () => {
 		vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 503 }))
 		visibilityState = 'visible'
 		vi.spyOn(document, 'visibilityState', 'get').mockImplementation(() => visibilityState)
-		clearLocalStorage()
+		updateLocalSessionState(() => ({ initializedUserId: undefined }))
 	})
 
 	afterEach(() => {
@@ -195,7 +188,7 @@ describe('TldrawApp.preload', () => {
 		vi.mocked(fetch).mockReturnValue(new Promise(() => {}))
 		await expect(createAppStub({ user: { id: 'user:test' } }).preload()).resolves.toBeUndefined()
 		expect(fetch).toHaveBeenCalledTimes(1)
-		expect(getFromLocalStorage(INITIALIZED_KEY)).toBe('true')
+		expect(getLocalSessionState().initializedUserId).toBe('user:test')
 	})
 
 	it('fails 5s after init fails when Zero confirms the user row is missing', async () => {
@@ -264,13 +257,13 @@ describe('TldrawApp.preload', () => {
 	})
 
 	it('skips init for a user already set up on this device', async () => {
-		setInLocalStorage(INITIALIZED_KEY, 'true')
+		updateLocalSessionState(() => ({ initializedUserId: 'user:test' }))
 		await expect(createAppStub({ user: { id: 'user:test' } }).preload()).resolves.toBeUndefined()
 		expect(fetch).not.toHaveBeenCalled()
 	})
 
 	it('runs init once when a flagged user turns out to have no row', async () => {
-		setInLocalStorage(INITIALIZED_KEY, 'true')
+		updateLocalSessionState(() => ({ initializedUserId: 'user:test' }))
 		vi.mocked(fetch).mockResolvedValue({ ok: true } as Response)
 		const user$ = atom('user', undefined as { id: string } | undefined)
 		const resolved = vi.fn()

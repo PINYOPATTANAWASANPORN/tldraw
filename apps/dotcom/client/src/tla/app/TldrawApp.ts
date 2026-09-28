@@ -30,10 +30,8 @@ import {
 	Result,
 	compact,
 	fetch,
-	getFromLocalStorage,
 	isEqual,
 	promiseWithResolve,
-	setInLocalStorage,
 	sleep,
 	sortByIndex,
 	sortByMaybeIndex,
@@ -71,7 +69,7 @@ import { copyTextToClipboard } from '../utils/copy'
 import { getDateFormat } from '../utils/dates'
 import { FeatureFlags } from '../utils/FeatureFlagPoller'
 import { createIntl, defineMessages, setupCreateIntl } from '../utils/i18n'
-import { updateLocalSessionState } from '../utils/local-session-state'
+import { getLocalSessionStateUnsafe, updateLocalSessionState } from '../utils/local-session-state'
 import { ZeroLogBuffer, formatLogArg, redactTokens } from './ZeroLogBuffer'
 
 export const TLDR_FILE_ENDPOINT = `/api/app/tldr`
@@ -471,7 +469,6 @@ export class TldrawApp {
 	async preload(signal?: AbortSignal) {
 		// Init must not gate boot: a hung worker PG dial would stall every returning user.
 		// The flag is a hint - a missing row still triggers init once Zero confirms it.
-		const initializedKey = `tldraw_user_initialized_${this.userId}`
 		let init: Promise<void> | undefined
 		let initState: PreloadDiagnostics['init'] = 'skipped'
 		let initError: Error | undefined
@@ -484,7 +481,7 @@ export class TldrawApp {
 			})
 			return init
 		}
-		if (!getFromLocalStorage(initializedKey)) void startInit()
+		if (getLocalSessionStateUnsafe().initializedUserId !== this.userId) void startInit()
 		// Zero's query can itself stall, so the deadline must cover it and every stage after it.
 		// The stage is in the error so Sentry can tell a slow Zero sync from a row that never arrived.
 		let stage: 'zero query' | 'state flush' | 'user record' | 'workspace data' = 'zero query'
@@ -566,7 +563,7 @@ export class TldrawApp {
 				})
 			}
 			await Promise.race([userLoaded, failed])
-			setInLocalStorage(initializedKey, 'true')
+			updateLocalSessionState(() => ({ initializedUserId: this.userId }))
 			markFirstLoad('zero-user-synced')
 			stage = 'workspace data'
 			// A fresh budget: these queries used to have no deadline, and a slow sync that's still

@@ -41,6 +41,8 @@ export interface TldrawAppSessionState {
 	>
 	sidebarWidth?: number
 	shouldShowWelcomeDialog?: boolean
+	/** Skips the boot init request; a hint only, see TldrawApp.preload. */
+	initializedUserId?: string
 }
 
 const defaultSessionState: TldrawAppSessionState = {
