@@ -148,7 +148,8 @@ export function createFirstLoadTracker(deps: FirstLoadDeps) {
 		deps.mark(`tla:${step}`)
 		deps.measure(step, lastT, t)
 		say(`[first-load] ${step} +${t}ms (+${t - lastT})`)
-		lastT = t
+		// Init runs in the background and can land after later steps; it shouldn't shift their deltas.
+		if (step !== 'init-done') lastT = t
 	}
 
 	function buildReport(): FirstLoadReport {
@@ -168,7 +169,8 @@ export function createFirstLoadTracker(deps: FirstLoadDeps) {
 			load_id: loadId,
 			route_kind: routeKind(),
 			steps,
-			total_ms: prev,
+			// Not the last mark: background init can land after board-visible, during the echo wait.
+			total_ms: marks['board-visible'] ?? prev,
 		}
 		for (const row of steps) {
 			const key = row.step.replaceAll('-', '_')

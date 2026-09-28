@@ -76,7 +76,6 @@ export function createPostgresConnectionPool(env: Environment, name: string, max
 		connectionString,
 		application_name: name,
 		idleTimeoutMillis: 5_000,
-		connectionTimeoutMillis: CONNECT_TIMEOUT_MS,
 		max,
 		Client: LoggingClient,
 	})

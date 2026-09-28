@@ -79,6 +79,21 @@ describe('createFirstLoadTracker', () => {
 		])
 	})
 
+	it("keeps a late init out of the total and the next step's span", () => {
+		const { deps, advance } = makeDeps()
+		const tracker = createFirstLoadTracker(deps)
+		advance(400)
+		tracker.mark('zero-user-synced')
+		advance(600)
+		tracker.mark('board-visible')
+		advance(1000)
+		tracker.mark('init-done')
+		advance(100)
+		tracker.mark('sync-connected')
+		expect(tracker.buildReport().total_ms).toBe(1000)
+		expect(deps.measure).toHaveBeenLastCalledWith('sync-connected', 1000, 2100)
+	})
+
 	it('orders steps by when they happened, not by the step list', () => {
 		const { deps, advance } = makeDeps()
 		const tracker = createFirstLoadTracker(deps)

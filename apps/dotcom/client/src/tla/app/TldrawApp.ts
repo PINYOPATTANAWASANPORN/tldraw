@@ -78,6 +78,9 @@ export const TLDR_FILE_ENDPOINT = `/api/app/tldr`
 export const PUBLISH_ENDPOINT = `/api/app/publish`
 
 const USER_PRELOAD_TIMEOUT_MS = 30_000
+// Init can fail after committing (dropped response, error after commit), so give the row a
+// chance to replicate before failing on it.
+const INIT_FAILURE_GRACE_MS = 5_000
 
 export interface PreloadDiagnostics {
 	stage: string
@@ -488,6 +491,7 @@ export class TldrawApp {
 		const failed = promiseWithResolve<never>()
 		let stopWaiting: (() => void) | undefined
 		let settled = false
+		let initGrace: ReturnType<typeof setTimeout> | undefined
 		let hiddenMs = 0
 		const fail = () => {
 			const error =
@@ -553,15 +557,25 @@ export class TldrawApp {
 				if (this.user$.get()) userLoaded.resolve()
 			})
 			if (!this.user$.get()) {
-				// Zero has confirmed the row is missing, so a failed init can't be outwaited.
+				// Zero has confirmed the row is missing, so a failed init won't be outwaited.
 				void startInit().then(() => {
-					if (initError && !settled && !this.user$.get()) fail()
+					if (!initError || settled) return
+					initGrace = setTimeout(() => {
+						if (!this.user$.get()) fail()
+					}, INIT_FAILURE_GRACE_MS)
 				})
 			}
 			await Promise.race([userLoaded, failed])
 			setInLocalStorage(initializedKey, 'true')
 			markFirstLoad('zero-user-synced')
 			stage = 'workspace data'
+			// A fresh budget: these queries used to have no deadline, and a slow sync that's still
+			// making progress shouldn't fail for time the user stage already spent.
+			if (timeout !== undefined) {
+				clearTimeout(timeout)
+				timeout = undefined
+				resumeDeadline()
+			}
 			await Promise.race([
 				Promise.all([
 					this.z.preload(queries.fileStates()).complete,
@@ -572,6 +586,7 @@ export class TldrawApp {
 			markFirstLoad('zero-preloaded')
 		} finally {
 			settled = true
+			clearTimeout(initGrace)
 			signal?.removeEventListener('abort', onAbort)
 			document.removeEventListener('visibilitychange', onVisibilityChange)
 			clearTimeout(timeout)
