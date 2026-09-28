@@ -15,14 +15,15 @@ function createAppStub({
 	queryComplete = Promise.resolve(),
 	workspaceComplete = Promise.resolve(),
 	changesFlushed = Promise.resolve(),
-	user$ = atom('user', undefined as { id: string } | undefined),
+	user = undefined as { id: string } | undefined,
+	user$ = atom('user', user),
 	zeroLog = new ZeroLogBuffer(),
 } = {}) {
 	return Object.assign(Object.create(TldrawApp.prototype), {
 		userId: 'user:test',
 		getToken: async () => 'token',
 		z: {
-			// The user query is preloaded first, file states and workspace memberships after it.
+			// 1st call = user query, rest = workspace queries
 			preload: vi
 				.fn()
 				.mockReturnValueOnce({ complete: queryComplete })
@@ -33,10 +34,6 @@ function createAppStub({
 		user$,
 		zeroLog,
 	}) as TldrawApp
-}
-
-function userAtom(user?: { id: string }) {
-	return atom('user', user)
 }
 
 let visibilityState: DocumentVisibilityState = 'visible'
@@ -64,7 +61,7 @@ describe('TldrawApp.preload', () => {
 		[undefined, 'Init failed: 503'],
 		[{ id: 'user:test' }, 'Timed out waiting for the zero query'],
 	])('times out a stalled Zero query with user %j', async (user, message) => {
-		const app = createAppStub({ queryComplete: promiseWithResolve<void>(), user$: userAtom(user) })
+		const app = createAppStub({ queryComplete: promiseWithResolve<void>(), user })
 		const rejected = vi.fn()
 		void app.preload().catch(rejected)
 
@@ -108,7 +105,7 @@ describe('TldrawApp.preload', () => {
 		['user record', {}],
 		[
 			'workspace data',
-			{ workspaceComplete: promiseWithResolve<void>(), user$: userAtom({ id: 'user:test' }) },
+			{ workspaceComplete: promiseWithResolve<void>(), user: { id: 'user:test' } },
 		],
 	])('names the stalled %s stage after a successful init', async (stage, stub) => {
 		vi.mocked(fetch).mockResolvedValue({ ok: true } as Response)
@@ -188,9 +185,7 @@ describe('TldrawApp.preload', () => {
 	})
 
 	it('loads an existing user after an init error and clears the deadline', async () => {
-		await expect(
-			createAppStub({ user$: userAtom({ id: 'user:test' }) }).preload()
-		).resolves.toBeUndefined()
+		await expect(createAppStub({ user: { id: 'user:test' } }).preload()).resolves.toBeUndefined()
 		// jsdom queues a 0ms timer for the flag write's storage event
 		await vi.advanceTimersByTimeAsync(0)
 		expect(vi.getTimerCount()).toBe(0)
@@ -198,9 +193,7 @@ describe('TldrawApp.preload', () => {
 
 	it('does not wait on a hung init when the user row exists', async () => {
 		vi.mocked(fetch).mockReturnValue(new Promise(() => {}))
-		await expect(
-			createAppStub({ user$: userAtom({ id: 'user:test' }) }).preload()
-		).resolves.toBeUndefined()
+		await expect(createAppStub({ user: { id: 'user:test' } }).preload()).resolves.toBeUndefined()
 		expect(fetch).toHaveBeenCalledTimes(1)
 		expect(getFromLocalStorage(INITIALIZED_KEY)).toBe('true')
 	})
@@ -220,16 +213,14 @@ describe('TldrawApp.preload', () => {
 
 	it('skips init for a user already set up on this device', async () => {
 		setInLocalStorage(INITIALIZED_KEY, 'true')
-		await expect(
-			createAppStub({ user$: userAtom({ id: 'user:test' }) }).preload()
-		).resolves.toBeUndefined()
+		await expect(createAppStub({ user: { id: 'user:test' } }).preload()).resolves.toBeUndefined()
 		expect(fetch).not.toHaveBeenCalled()
 	})
 
 	it('runs init once when a flagged user turns out to have no row', async () => {
 		setInLocalStorage(INITIALIZED_KEY, 'true')
 		vi.mocked(fetch).mockResolvedValue({ ok: true } as Response)
-		const user$ = userAtom()
+		const user$ = atom('user', undefined as { id: string } | undefined)
 		const resolved = vi.fn()
 		void createAppStub({ user$ }).preload().then(resolved)
 

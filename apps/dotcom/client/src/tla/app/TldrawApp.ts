@@ -448,7 +448,7 @@ export class TldrawApp {
 		return this.z.materialize(query as any) as unknown as TypedView<TReturn>
 	}
 
-	/** Creates the user row + home workspace; resolves with the failure instead of rejecting. */
+	/** Creates the user row + home workspace. */
 	private async initUser(): Promise<Error | undefined> {
 		try {
 			const token = await this.getToken()
@@ -466,9 +466,8 @@ export class TldrawApp {
 	}
 
 	async preload(signal?: AbortSignal) {
-		// Init only matters when the user row is missing, so it never gates boot: a hung Postgres dial
-		// in the worker would otherwise stall every returning user for ~20s. The per-device flag is
-		// only a hint; a flagged user whose row is missing still gets init once Zero confirms it.
+		// Init must not gate boot: a hung worker PG dial would stall every returning user.
+		// The flag is a hint - a missing row still triggers init once Zero confirms it.
 		const initializedKey = `tldraw_user_initialized_${this.userId}`
 		let init: Promise<void> | undefined
 		let initState: PreloadDiagnostics['init'] = 'skipped'
@@ -483,7 +482,7 @@ export class TldrawApp {
 			return init
 		}
 		if (!getFromLocalStorage(initializedKey)) void startInit()
-		// Zero's query can itself stall, so the deadline must cover it as well as the user row.
+		// Zero's query can itself stall, so the deadline must cover it and every stage after it.
 		// The stage is in the error so Sentry can tell a slow Zero sync from a row that never arrived.
 		let stage: 'zero query' | 'state flush' | 'user record' | 'workspace data' = 'zero query'
 		const failed = promiseWithResolve<never>()
