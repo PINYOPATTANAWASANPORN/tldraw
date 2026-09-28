@@ -30,8 +30,10 @@ import {
 	Result,
 	compact,
 	fetch,
+	getFromLocalStorage,
 	isEqual,
 	promiseWithResolve,
+	setInLocalStorage,
 	sleep,
 	sortByIndex,
 	sortByMaybeIndex,
@@ -79,13 +81,13 @@ const USER_PRELOAD_TIMEOUT_MS = 30_000
 
 export interface PreloadDiagnostics {
 	stage: string
+	init: 'skipped' | 'pending' | 'ok' | 'failed'
 	connection: string
 	connectionReason: string | undefined
 	visibilityState: DocumentVisibilityState
 	hiddenMs: number
 	online: boolean
 	msSinceNavigation: number
-	msSinceInit: number
 	zeroLog: string[]
 }
 
@@ -446,33 +448,58 @@ export class TldrawApp {
 		return this.z.materialize(query as any) as unknown as TypedView<TReturn>
 	}
 
+	/** Creates the user row + home workspace; resolves with the failure instead of rejecting. */
+	private async initUser(): Promise<Error | undefined> {
+		try {
+			const token = await this.getToken()
+			if (!token) return new Error('No auth token available for init')
+			const res = await fetch(`/api/app/${this.userId}/init`, {
+				method: 'POST',
+				headers: { Authorization: `Bearer ${token}`, 'x-tldraw-load-id': getFirstLoadId() },
+			})
+			return res.ok ? undefined : new Error(`Init failed: ${res.status}`)
+		} catch (e) {
+			return e instanceof Error ? e : new Error(String(e))
+		} finally {
+			markFirstLoad('init-done')
+		}
+	}
+
 	async preload(signal?: AbortSignal) {
-		// Ensure user exists in DB before Zero can query
-		const token = await this.getToken()
-		if (!token) throw new Error('No auth token available for init')
-		const res = await fetch(`/api/app/${this.userId}/init`, {
-			method: 'POST',
-			headers: { Authorization: `Bearer ${token}`, 'x-tldraw-load-id': getFirstLoadId() },
-		})
-		markFirstLoad('init-done')
-		// A failed init only matters if the user row never shows up: returning users whose row
-		// already exists should still load through a transient worker error.
-		const initError = res.ok ? undefined : new Error(`Init failed: ${res.status}`)
+		// Init only matters when the user row is missing, so it never gates boot: a hung Postgres dial
+		// in the worker would otherwise stall every returning user for ~20s. The per-device flag is
+		// only a hint; a flagged user whose row is missing still gets init once Zero confirms it.
+		const initializedKey = `tldraw_user_initialized_${this.userId}`
+		let init: Promise<void> | undefined
+		let initState: PreloadDiagnostics['init'] = 'skipped'
+		let initError: Error | undefined
+		const startInit = () => {
+			if (init) return init
+			initState = 'pending'
+			init = this.initUser().then((error) => {
+				initState = error ? 'failed' : 'ok'
+				initError = error
+			})
+			return init
+		}
+		if (!getFromLocalStorage(initializedKey)) void startInit()
 		// Zero's query can itself stall, so the deadline must cover it as well as the user row.
 		// The stage is in the error so Sentry can tell a slow Zero sync from a row that never arrived.
-		let stage: 'zero query' | 'state flush' | 'user record' = 'zero query'
-		const timedOut = promiseWithResolve<never>()
+		let stage: 'zero query' | 'state flush' | 'user record' | 'workspace data' = 'zero query'
+		const failed = promiseWithResolve<never>()
 		let stopWaiting: (() => void) | undefined
-		const initReturnedAt = Date.now()
+		let settled = false
 		let hiddenMs = 0
 		const fail = () => {
-			const error = initError ?? new Error(`Timed out waiting for the ${stage} after init`)
+			const error =
+				(!this.user$.get() && initError) || new Error(`Timed out waiting for the ${stage}`)
 			try {
 				const connection = this.z.connection.state.current
 				// Sentry's ExtraErrorData integration copies this onto the event.
 				Object.assign(error, {
 					diagnostics: {
 						stage,
+						init: initState,
 						connection: connection.name,
 						connectionReason:
 							'reason' in connection ? redactTokens(formatLogArg(connection.reason)) : undefined,
@@ -480,12 +507,11 @@ export class TldrawApp {
 						hiddenMs,
 						online: navigator.onLine,
 						msSinceNavigation: Math.round(performance.now()),
-						msSinceInit: Date.now() - initReturnedAt,
 						zeroLog: this.zeroLog.recent(),
 					} satisfies PreloadDiagnostics,
 				})
 			} finally {
-				timedOut.reject(error)
+				failed.reject(error)
 			}
 		}
 		// Zero built in a hidden tab waits for visibility before connecting, so a restored or
@@ -515,31 +541,43 @@ export class TldrawApp {
 		else hiddenSince = Date.now()
 		// A hidden tab can sit here indefinitely, so the caller needs a way to settle this and let
 		// create() dispose the half-built app when it gives up on it.
-		const onAbort = () => timedOut.reject(new DOMException('Bootstrap cancelled', 'AbortError'))
+		const onAbort = () => failed.reject(new DOMException('Bootstrap cancelled', 'AbortError'))
 		signal?.addEventListener('abort', onAbort)
 		if (signal?.aborted) onAbort()
 		try {
-			await Promise.race([this.z.preload(queries.user()).complete, timedOut])
+			await Promise.race([this.z.preload(queries.user()).complete, failed])
 			stage = 'state flush'
-			await Promise.race([this.changesFlushed, timedOut])
+			await Promise.race([this.changesFlushed, failed])
 			stage = 'user record'
 			const userLoaded = promiseWithResolve<void>()
 			stopWaiting = react('wait for user', () => {
 				if (this.user$.get()) userLoaded.resolve()
 			})
-			await Promise.race([userLoaded, timedOut])
+			if (!this.user$.get()) {
+				// Zero has confirmed the row is missing, so a failed init can't be outwaited.
+				void startInit().then(() => {
+					if (initError && !settled && !this.user$.get()) fail()
+				})
+			}
+			await Promise.race([userLoaded, failed])
+			setInLocalStorage(initializedKey, 'true')
 			markFirstLoad('zero-user-synced')
+			stage = 'workspace data'
+			await Promise.race([
+				Promise.all([
+					this.z.preload(queries.fileStates()).complete,
+					this.z.preload(queries.workspaceMemberships()).complete,
+				]),
+				failed,
+			])
+			markFirstLoad('zero-preloaded')
 		} finally {
+			settled = true
 			signal?.removeEventListener('abort', onAbort)
 			document.removeEventListener('visibilitychange', onVisibilityChange)
 			clearTimeout(timeout)
 			stopWaiting?.()
 		}
-		await Promise.all([
-			this.z.preload(queries.fileStates()).complete,
-			this.z.preload(queries.workspaceMemberships()).complete,
-		])
-		markFirstLoad('zero-preloaded')
 	}
 
 	messages = defineMessages({

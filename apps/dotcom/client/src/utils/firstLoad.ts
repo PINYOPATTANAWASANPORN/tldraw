@@ -37,7 +37,8 @@ const FIRST_LOAD_STEP_INFO: Record<FirstLoadStep, string> = {
 	'root-chunk-loaded': 'TlaRootProviders route chunk evaluated',
 	'clerk-loaded': 'Clerk reported isLoaded (session known)',
 	'flags-loaded': 'feature flags resolved, or timed out to defaults',
-	'init-done': 'POST /api/app/:userId/init returned (see srv_init_outcome)',
+	'init-done':
+		'POST /api/app/:userId/init returned (see srv_init_outcome); absent when skipped for a user already set up on this device',
 	'zero-user-synced': 'Zero confirmed the user row from the server',
 	'zero-preloaded': 'Zero confirmed file states + workspace memberships; app state unblocks',
 	'file-chunk-loaded': 'file route chunk evaluated',
@@ -61,7 +62,7 @@ const FIRST_LOAD_FIELD_INFO: Record<string, string> = {
 	srv_echo: 'server timings arrived; false = none within 3s of board-visible',
 	srv_init_ms: 'sync worker: user init request (Server-Timing)',
 	srv_init_outcome:
-		'existing (user already set up), created (first sign-in), or a failure: rate_limited, no_clerk_user, no_email; absent if init threw',
+		'existing (user already set up), created (first sign-in), or a failure: rate_limited, no_clerk_user, no_email; absent if init threw, was skipped, or was still pending',
 	res_count: 'resources loaded by board-visible',
 	res_kb: 'total transferred',
 	res_js_kb: 'JS transferred',
